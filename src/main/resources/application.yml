@@ -1,6 +1,5 @@
 spring:
   application:
     name: TownSignalBE
-
-server:
-  port: 8080
+  profiles:
+    active: dev

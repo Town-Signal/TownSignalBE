@@ -2,18 +2,8 @@ name: Backend Deploy
 
 # AWS(ECR/EC2/DB) 준비 전이라 당분간 수동 실행만 가능하도록 해둠.
 # 인프라/시크릿 세팅 끝나면 트리거를 `push: branches: [ main ]`으로 바꿔서 자동 배포로 전환할 것.
-# (팀 가이드: 배포는 main 브랜치에 push/merge 될 때만 실행, develop은 자동 배포 대상 아님)
 on:
   workflow_dispatch:
-    inputs:
-      profile:
-        description: '배포할 프로파일'
-        required: true
-        default: 'prod'
-        type: choice
-        options:
-          - dev
-          - prod
 
 env:
   AWS_REGION: ap-northeast-2
@@ -24,12 +14,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
 
       # application-dev.yml / application-prod.yml은 민감정보가 담겨 있어 git에 올리지 않고
@@ -40,15 +30,18 @@ jobs:
       - name: Restore application-prod.yml
         run: echo "${{ secrets.APP_PROPERTIES_PROD }}" | base64 --decode > src/main/resources/application-prod.yml
 
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
       - name: Build with Gradle
-        run: ./gradlew build -x test
+        run: ./gradlew clean build -x test
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          aws-region: ${{ env.AWS_REGION }}
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -57,38 +50,28 @@ jobs:
       - name: Build, tag, and push image to Amazon ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: latest
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
+      # EC2에는 Access Key를 두지 않는다 - 인스턴스에 IAM Role(ECR Pull 권한)을 붙여서
+      # 그 역할로 자동 인증되도록 한다 (서버 탈취 시 자격증명 유출 방지).
       - name: Deploy to EC2
         uses: appleboy/ssh-action@master
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ env.AWS_REGION }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
-          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
-          SPRING_PROFILES_ACTIVE: ${{ github.event.inputs.profile }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_KEY }}
-          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_REGION,ECR_REGISTRY,ECR_REPOSITORY,CONTAINER_NAME,SPRING_PROFILES_ACTIVE
           script: |
-            aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-            aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-            aws configure set region $AWS_REGION
-            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
 
-            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
+            docker rm -f ${{ env.CONTAINER_NAME }} || true
 
-            docker stop $CONTAINER_NAME || true
-            docker rm $CONTAINER_NAME || true
+            docker pull ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            docker run -d -p 8080:8080 --name ${{ env.CONTAINER_NAME }} \
+              -e SPRING_PROFILES_ACTIVE=prod \
+              -e TZ=Asia/Seoul \
+              ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
-            docker run -d --name $CONTAINER_NAME -p 80:8080 --restart unless-stopped \
-              -e SPRING_PROFILES_ACTIVE="$SPRING_PROFILES_ACTIVE" \
-              $ECR_REGISTRY/$ECR_REPOSITORY:latest
+            docker image prune -f
