@@ -1,6 +1,10 @@
 HELP.md
 .gradle
 build/
+
+### 민감 설정 (GitHub Secrets로 관리, 커밋 금지) ###
+application-dev.yml
+application-prod.yml
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/

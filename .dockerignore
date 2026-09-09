@@ -1,0 +1,9 @@
+.git
+.github
+.gradle
+gradle
+gradlew
+gradlew.bat
+build/reports
+build/test-results
+*.md
