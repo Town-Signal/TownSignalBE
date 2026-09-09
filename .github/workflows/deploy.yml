@@ -1,8 +1,9 @@
 name: Backend Deploy
 
+# AWS(EC2/DB) 준비 전이라 당분간 수동 실행만 가능하도록 해둠.
+# EC2/시크릿 세팅 끝나면 아래를 `push: branches: [ main ]`으로 바꿔서 자동 배포로 전환할 것.
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
